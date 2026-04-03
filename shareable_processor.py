@@ -54,7 +54,7 @@ DEFAULT_CONFIG = {
     "email_recipient": "uren@polteq.com",
     "email_cc": "",
     "email_subject": "Urenstaat {employee_name} - {client_name} {month_year}",
-    "email_body": "Zie bijlage voor de urenstaat van {month_year}.\n\n"
+    "email_body": "Zie bijlage voor de urenstaat van {month_year}.\n\n\n"
 }
 
 def load_config(interactive=False):
