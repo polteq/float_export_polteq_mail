@@ -1,16 +1,15 @@
-# Timesheet Automation (`float_export_polteq_mail`)
+# Timesheet Automation (`float_export_polteq_mail`) 🚀
 
-Automated processing of Float timesheet exports to Excel and PDF formats.
-
-## Overview
-
-This tool automates the conversion of CSV timesheet exports from Float/People into formatted Excel and PDF files, automatically organizing them into a designated folder (like OneDrive), and drafting an email to send them.
-
-It is designed to be completely **Cross-Platform (Windows & macOS)** and extremely easy to use via Drag-and-Drop.
+Automated processing of Float/People timesheet exports to Excel and PDF formats.
 
 ---
 
-## 🚀 Easy Setup & Usage
+## 🚀 Snel aan de slag (NL)
+Zie [START_GUIDE_NL.md](START_GUIDE_NL.md) voor een korte, lichte handleiding in het Nederlands.
+
+---
+
+## 🚀 Quick Setup & Usage (EN)
 
 ### 1. Initial Setup
 You only need to do this once. Ensure you have **Python 3** installed.
@@ -19,36 +18,29 @@ You only need to do this once. Ensure you have **Python 3** installed.
 Double-click `setup_windows.bat`.
 
 **macOS:**
-Double-click `setup_mac.command`.
-
-*Note: If you get an "appropriate access privileges" error, open your Terminal in this folder and run:*
-`chmod +x setup_mac.command`
-*(Then try double-clicking it again)*
+Double-click `setup_mac.command`.  
+*Note: If you get an "appropriate access privileges" error, run `chmod +x setup_mac.command` in your terminal.*
 
 This will:
 - Install all necessary dependencies.
-- Ask for your Name, Client Name, and the folder where you want to save the generated files.
-- Create a shortcut/app on your Desktop called **"Process Timesheet"**.
+- Ask for your Name, Client Name, and Target Folder (e.g., your OneDrive folder).
+- Create a **"Process Timesheet"** icon on your Desktop.
 
 ### 2. Daily Usage (Drag & Drop)
-When you download a new `*-LoggedTime-*.csv` file from Float, simply **drag and drop** the CSV file onto the **"Process Timesheet"** shortcut on your Desktop.
+1. Download your `*-LoggedTime-*.csv` file from Float.
+2. **Drag and drop** the CSV file onto the **"Process Timesheet"** icon on your Desktop.
 
-The tool will:
-1. Generate a beautifully formatted Excel file.
-2. Generate a high-quality PDF.
-3. Save both files to your configured folder.
-4. Open a draft email in your local Outlook with the files attached and ready to send!
+**What happens next?**
+1. **Excel & PDF:** Beautifully formatted files are saved to your configured Target Folder.
+2. **Archiving:** Your original CSV is moved to the `converted/` folder to keep your desktop clean.
+3. **Email:** A draft email opens in Outlook with the files attached, ready to send!
 
 ---
 
-## AI Assistants Guide
-If you are an AI assistant trying to run this tool for the user, please refer to [AI_GUIDE.md](AI_GUIDE.md).
-
-## Configuration
-Your personal details (Name, Client, Target Folder) are saved in `config.json`. You can edit this file directly at any time if your details change, or run `python shareable_processor.py --setup` to reconfigure.
-
-## Legacy System
-The older macOS-only processor (`process_timesheet.py` and `run_timesheet_processor.sh`) is still included for backwards compatibility but is considered legacy.
+## 💡 Troubleshooting
+- **macOS:** If the app doesn't open, Right-Click -> Open to allow execution the first time.
+- **Windows:** Ensure Microsoft Excel is installed for the best PDF quality.
+- **Config:** Want to change your name or client? Run the setup again or edit `config.json`.
 
 ---
 **Maintainer:** Jorre van Munster
