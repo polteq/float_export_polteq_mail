@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "recipient": "uren@polteq.com",
+  "cc": "",
+  "subject": "Urenstaat Jorre - Signify {month_year}",
+  "body": "Zie bijlage voor de urenstaat van {month_year}.\n\n"
+}
