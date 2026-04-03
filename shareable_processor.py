@@ -97,17 +97,28 @@ def save_config(config):
         json.dump(config, f, indent=4)
     logger.info(f"Saved configuration to {CONFIG_FILE}")
 
-def extract_date_from_filename(filename):
-    """Extract end date from filename pattern: *-LoggedTime-YYYYMMDD-YYYYMMDD.csv"""
+def extract_end_date(filename, df=None):
+    """Extract end date from filename or fallback to DataFrame content."""
     pattern = r'(.*?)-LoggedTime-(\d{8})-(\d{8}).*?\.csv'
     match = re.search(pattern, filename)
     
-    if not match:
-        raise ValueError(f"Filename '{filename}' does not match expected pattern (*-LoggedTime-YYYYMMDD-YYYYMMDD.csv)")
+    if match:
+        end_date_str = match.group(3)
+        return datetime.strptime(end_date_str, '%Y%m%d')
+        
+    logger.info(f"Filename '{filename}' didn't match expected pattern. Checking CSV content.")
     
-    end_date_str = match.group(3)
-    end_date = datetime.strptime(end_date_str, '%Y%m%d')
-    return end_date
+    if df is not None:
+        # Fallback to checking DataFrame for a 'Date' column
+        date_col = next((col for col in df.columns if str(col).strip().lower() == 'date'), None)
+        if date_col:
+            # Coerce errors to NaT and drop them to find the max date
+            dates = pd.to_datetime(df[date_col], errors='coerce')
+            max_date = dates.max()
+            if pd.notna(max_date):
+                return max_date
+                
+    raise ValueError(f"Could not determine end date from filename '{filename}' or CSV content.")
 
 def read_csv_flexibly(file_path):
     """Read CSV file, trying multiple delimiters."""
@@ -368,11 +379,11 @@ def process_file(csv_file_path, config):
 
     logger.info(f"Processing: {csv_path.name}")
     try:
-        end_date = extract_date_from_filename(csv_path.name)
-        month_year = end_date.strftime('%m-%Y')
-        
         df = read_csv_flexibly(csv_path)
         logger.info(f"Loaded {len(df)} rows.")
+        
+        end_date = extract_end_date(csv_path.name, df)
+        month_year = end_date.strftime('%m-%Y')
         
         base_filename = f"Urenstaat {config['client_name']}-{config['employee_name']} {month_year}"
         excel_filename = f"{base_filename}.xlsx"
