@@ -210,6 +210,68 @@ def convert_to_pdf_pure_python(df, output_path, title):
         logger.error(f"Error creating PDF: {e}")
         return False
 
+def convert_to_pdf_numbers(csv_path, pdf_path):
+    """Convert CSV to PDF using Numbers.app (macOS native) for best formatting."""
+    logger.info(f"Converting to PDF using Numbers.app: {pdf_path}")
+    try:
+        # Use absolute paths for AppleScript
+        abs_csv = os.path.abspath(csv_path)
+        abs_pdf = os.path.abspath(pdf_path)
+        
+        applescript = f'''
+        tell application "Numbers"
+            set theDoc to open POSIX file "{abs_csv}"
+            delay 1
+            export theDoc to POSIX file "{abs_pdf}" as PDF
+            close theDoc without saving
+        end tell
+        '''
+        
+        result = subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0 and os.path.exists(abs_pdf):
+            logger.info(f"✓ PDF created successfully using Numbers: {pdf_path}")
+            return True
+        else:
+            logger.warning(f"Numbers export failed: {result.stderr}")
+            return False
+    except Exception as e:
+        logger.warning(f"Error using Numbers for PDF conversion: {e}")
+        return False
+
+def convert_to_pdf_excel_win32(excel_path, pdf_path):
+    """Convert Excel to PDF using Microsoft Excel (Windows native) for best formatting."""
+    logger.info(f"Converting to PDF using Excel (win32com): {pdf_path}")
+    try:
+        import win32com.client
+        from pythoncom import com_error
+        
+        excel_abs = os.path.abspath(excel_path)
+        pdf_abs = os.path.abspath(pdf_path)
+        
+        excel = win32com.client.Dispatch("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        
+        try:
+            wb = excel.Workbooks.Open(excel_abs)
+            # 0 = xlTypePDF
+            wb.ExportAsFixedFormat(0, pdf_abs)
+            wb.Close(False)
+            logger.info(f"✓ PDF created successfully using Excel: {pdf_path}")
+            return True
+        except com_error as e:
+            logger.warning(f"Excel export failed: {e}")
+            return False
+        finally:
+            excel.Quit()
+    except ImportError:
+        logger.warning("pywin32 not installed. Cannot use Excel for PDF conversion.")
+        return False
+    except Exception as e:
+        logger.warning(f"Error using Excel for PDF conversion: {e}")
+        return False
+
 def create_outlook_email(config, excel_path, pdf_path, month_year):
     """Create a new email in Outlook, cross-platform."""
     if not config.get("email_enabled", True):
@@ -303,11 +365,24 @@ def process_file(csv_file_path, config):
         pdf_path = target_folder / pdf_filename
         
         convert_to_excel(df, excel_path)
-        pdf_success = convert_to_pdf_pure_python(df, pdf_path, title=base_filename)
+        
+        # Try native conversion on macOS if possible
+        pdf_success = False
+        os_name = platform.system()
+        if os_name == "Darwin":
+            pdf_success = convert_to_pdf_numbers(csv_path, pdf_path)
+        elif os_name == "Windows":
+            pdf_success = convert_to_pdf_excel_win32(excel_path, pdf_path)
+        
+        # Fallback for any OS
+        if not pdf_success:
+            pdf_success = convert_to_pdf_pure_python(df, pdf_path, title=base_filename)
         
         # Archive original CSV
         archived_csv_path = CONVERTED_FOLDER / csv_path.name
-        shutil.move(str(csv_path), str(archived_csv_path))
+        # Using copy + unlink to avoid cross-device link issues if folders are on different partitions
+        shutil.copy2(str(csv_path), str(archived_csv_path))
+        os.remove(str(csv_path))
         logger.info(f"Archived original CSV to {archived_csv_path}")
         
         # Draft email
