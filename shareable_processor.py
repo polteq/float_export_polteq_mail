@@ -214,13 +214,20 @@ def convert_to_pdf_pure_python(df, output_path, title):
         logger.error(f"Error creating PDF: {e}")
         return False
 
+def escape_applescript_string(text: str) -> str:
+    """Escape backslashes and double quotes for safe AppleScript injection."""
+    if text is None:
+        return ""
+    text = str(text)
+    return text.replace('\\', '\\\\').replace('"', '\\"')
+
 def convert_to_pdf_numbers(csv_path, pdf_path):
     """Convert CSV to PDF using Numbers.app (macOS native) for best formatting."""
     logger.info(f"Converting to PDF using Numbers.app: {pdf_path}")
     try:
         # Use absolute paths for AppleScript
-        abs_csv = os.path.abspath(csv_path)
-        abs_pdf = os.path.abspath(pdf_path)
+        abs_csv = escape_applescript_string(os.path.abspath(csv_path))
+        abs_pdf = escape_applescript_string(os.path.abspath(pdf_path))
         
         applescript = f'''
         tell application "Numbers"
@@ -299,16 +306,22 @@ def create_outlook_email(config, excel_path, pdf_path, month_year):
     
     if os_name == "Darwin":
         logger.info("Drafting email using macOS AppleScript...")
-        # AppleScript strings use \r for newlines in many cases for Outlook
-        body_escaped = body.replace('"', '\\"').replace('\n', '\r')
+        # Escape inputs for AppleScript
+        subject_escaped = escape_applescript_string(subject)
+        body_escaped = escape_applescript_string(body).replace('\n', '\r')
+        recipient_escaped = escape_applescript_string(recipient)
+        cc_escaped = escape_applescript_string(cc)
+        excel_path_escaped = escape_applescript_string(excel_path)
+        pdf_path_escaped = escape_applescript_string(pdf_path)
+        
         try:
             applescript = f'''
             tell application "Microsoft Outlook"
-                set newMessage to make new outgoing message with properties {{subject:"{subject}", content:"{body_escaped}"}}
-                {f'make new recipient at newMessage with properties {{email address:{{address:"{recipient}"}}}}' if recipient else ''}
-                {f'make new cc recipient at newMessage with properties {{email address:{{address:"{cc}"}}}}' if cc else ''}
-                make new attachment at newMessage with properties {{file:POSIX file "{excel_path}"}}
-                make new attachment at newMessage with properties {{file:POSIX file "{pdf_path}"}}
+                set newMessage to make new outgoing message with properties {{subject:"{subject_escaped}", content:"{body_escaped}"}}
+                {f'make new recipient at newMessage with properties {{email address:{{address:"{recipient_escaped}"}}}}' if recipient else ''}
+                {f'make new cc recipient at newMessage with properties {{email address:{{address:"{cc_escaped}"}}}}' if cc else ''}
+                make new attachment at newMessage with properties {{file:POSIX file "{excel_path_escaped}"}}
+                make new attachment at newMessage with properties {{file:POSIX file "{pdf_path_escaped}"}}
                 open newMessage
                 activate
             end tell
