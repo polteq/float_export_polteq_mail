@@ -19,7 +19,11 @@ You only need to do this once. Ensure you have **Python 3** installed.
 Double-click `setup_windows.bat`.
 
 **macOS:**
-Double-click `setup_mac.command`. *(If macOS blocks it, Right-Click -> Open)*.
+Double-click `setup_mac.command`.
+
+*Note: If you get an "appropriate access privileges" error, open your Terminal in this folder and run:*
+`chmod +x setup_mac.command`
+*(Then try double-clicking it again)*
 
 This will:
 - Install all necessary dependencies.
