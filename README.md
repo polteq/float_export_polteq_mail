@@ -9,9 +9,15 @@ Zie [START_GUIDE_NL.md](START_GUIDE_NL.md) voor een korte, lichte handleiding in
 
 ---
 
-## 🚀 Quick Setup & Usage (EN)
+## 🚀 Getting Started
 
-### 1. Initial Setup
+### 1. Getting the Files
+First, get the project files on your computer:
+- **Option A (Recommended):** Clone the repository:
+  `git clone https://github.com/polteq/float_export_polteq_mail.git`
+- **Option B:** Download the [ZIP file](https://github.com/polteq/float_export_polteq_mail/archive/refs/heads/main.zip) and extract it to a folder of your choice.
+
+### 2. Initial Setup
 You only need to do this once. Ensure you have **Python 3** installed.
 
 **Windows:**
