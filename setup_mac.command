@@ -27,59 +27,35 @@ python3 shareable_processor.py --setup
 echo ""
 echo "Creating Desktop Drag-and-Drop Application..."
 
-APP_DIR="$HOME/Desktop/Process Timesheet.app"
-mkdir -p "$APP_DIR/Contents/MacOS"
+APP_PATH="$HOME/Desktop/Process Timesheet.app"
+rm -rf "$APP_PATH"
 
-# Create Info.plist to make it a drop target
-cat > "$APP_DIR/Contents/Info.plist" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>dropper</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.polteq.timesheetprocessor</string>
-    <key>CFBundleName</key>
-    <string>Process Timesheet</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleSignature</key>
-    <string>????</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>10.10</string>
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeExtensions</key>
-            <array>
-                <string>csv</string>
-            </array>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-        </dict>
-    </array>
-</dict>
-</plist>
+# Create a temporary AppleScript source file
+cat > "tmp_applet.applescript" << EOF
+on open dropped_files
+    repeat with the_file in dropped_files
+        set posix_path to POSIX path of the_file
+        tell application "Terminal"
+            activate
+            do script "cd '$PWD' && source venv/bin/activate && python3 shareable_processor.py '" & posix_path & "'; exit"
+        end tell
+    end repeat
+end open
+
+on run
+    tell application "Terminal"
+        activate
+        do script "cd '$PWD' && source venv/bin/activate && python3 shareable_processor.py; exit"
+    end tell
+end run
 EOF
 
-# Create the bash executable that receives the dropped file
-cat > "$APP_DIR/Contents/MacOS/dropper" << EOF
-#!/bin/bash
-cd "$PWD"
-source venv/bin/activate
-# Argument 1 is the file dropped
-if [ -n "\$1" ]; then
-    python3 shareable_processor.py "\$1"
-else
-    # Fallback to run without args
-    python3 shareable_processor.py
-fi
-EOF
+# Compile the AppleScript into a real application
+osacompile -o "$APP_PATH" "tmp_applet.applescript"
+rm "tmp_applet.applescript"
 
-chmod +x "$APP_DIR/Contents/MacOS/dropper"
+# Add a basic icon hint by setting the CFBundleIdentifier (optional but cleaner)
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.polteq.timesheetprocessor" "$APP_PATH/Contents/Info.plist"
 
 echo ""
 echo "Setup Complete!"
