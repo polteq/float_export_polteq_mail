@@ -21,6 +21,8 @@ import subprocess
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Dict, Any
+
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill
@@ -34,7 +36,7 @@ CONFIG_FILE = SCRIPT_DIR / "config.json"
 LOG_FOLDER.mkdir(exist_ok=True)
 CONVERTED_FOLDER.mkdir(exist_ok=True)
 
-# Setup Logging (JSON output friendly for AI if needed, but standard text is okay)
+# Setup Logging
 log_file = LOG_FOLDER / f"shareable_processing_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 logging.basicConfig(
     level=logging.INFO,
@@ -57,374 +59,382 @@ DEFAULT_CONFIG = {
     "email_body": "Zie bijlage voor de urenstaat van {month_year}.\n\n\n"
 }
 
-def load_config(interactive=False):
-    """Loads configuration, optionally prompting interactively if missing."""
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-                return config
-        except Exception as e:
-            logger.error(f"Failed to read config file: {e}")
-    
-    if interactive:
-        print("\n--- First Time Setup ---")
-        print("This tool converts Float CSV exports to Excel/PDF and drafts an email.")
-        print("Note: Your original CSV will be archived to the 'converted/' folder after processing.\n")
-        
-        config = DEFAULT_CONFIG.copy()
-        
-        name = input(f"Employee Name (e.g. {config['employee_name']}): ").strip()
-        if name: config['employee_name'] = name
-        
-        client = input(f"Client Name (e.g. {config['client_name']}): ").strip()
-        if client: config['client_name'] = client
-        
-        print(f"\nTarget Folder: Where the final Excel and PDF files will be saved.")
-        folder = input(f"Target Output Folder (e.g. OneDrive) [{config['target_folder']}]: ").strip()
-        if folder: config['target_folder'] = folder
-        
-        save_config(config)
-        print("\nConfiguration saved! You are ready to go.\n")
-        return config
-    else:
-        logger.warning("Config file missing. Generating default config.json.")
-        save_config(DEFAULT_CONFIG)
-        return DEFAULT_CONFIG
 
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
-    logger.info(f"Saved configuration to {CONFIG_FILE}")
+class TimesheetProcessor:
+    """Encapsulates the logic for processing timesheet CSV files into Excel/PDF and drafting emails."""
 
-def extract_end_date(filename, df=None):
-    """Extract end date from filename or fallback to DataFrame content."""
-    pattern = r'(.*?)-LoggedTime-(\d{8})-(\d{8}).*?\.csv'
-    match = re.search(pattern, filename)
-    
-    if match:
-        end_date_str = match.group(3)
-        return datetime.strptime(end_date_str, '%Y%m%d')
-        
-    logger.info(f"Filename '{filename}' didn't match expected pattern. Checking CSV content.")
-    
-    if df is not None:
-        # Fallback to checking DataFrame for a 'Date' column
-        date_col = next((col for col in df.columns if str(col).strip().lower() == 'date'), None)
-        if date_col:
-            # Coerce errors to NaT and drop them to find the max date
-            dates = pd.to_datetime(df[date_col], errors='coerce')
-            max_date = dates.max()
-            if pd.notna(max_date):
-                return max_date
-                
-    raise ValueError(f"Could not determine end date from filename '{filename}' or CSV content.")
+    def __init__(self, config_path: Path, interactive_setup: bool = False):
+        self.config_path = config_path
+        self.config = self._load_config(interactive_setup)
 
-def read_csv_flexibly(file_path):
-    """Read CSV file, trying multiple delimiters."""
-    for delimiter in [',', '\t', ';']:
-        try:
-            df = pd.read_csv(file_path, delimiter=delimiter)
-            if len(df.columns) > 1:
-                return df
-        except Exception:
-            pass
-    try:
-        df = pd.read_csv(file_path, sep=None, engine='python')
-        return df
-    except Exception as e:
-        raise ValueError(f"Failed to read CSV with any delimiter: {e}")
-
-def convert_to_excel(df, output_path):
-    """Convert DataFrame to Excel file with basic formatting."""
-    logger.info(f"Converting to Excel: {output_path}")
-    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Timesheet')
-        worksheet = writer.sheets['Timesheet']
+    def _load_config(self, interactive: bool) -> Dict[str, Any]:
+        """Loads configuration, optionally prompting interactively if missing."""
+        if self.config_path.exists():
+            try:
+                with open(self.config_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to read config file: {e}")
         
-        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-        header_font = Font(color="FFFFFF", bold=True)
-        
-        for cell in worksheet[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-        
-        for column in worksheet.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            worksheet.column_dimensions[column_letter].width = min(max_length + 2, 50)
-
-def convert_to_pdf_pure_python(df, output_path, title):
-    """Generate high-quality PDF using ReportLab without external dependencies."""
-    logger.info(f"Converting to PDF (Pure Python): {output_path}")
-    try:
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib import colors
-        
-        doc = SimpleDocTemplate(str(output_path), pagesize=landscape(A4),
-                                rightMargin=30, leftMargin=30,
-                                topMargin=30, bottomMargin=30)
-        elements = []
-        styles = getSampleStyleSheet()
-        
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=16,
-            textColor=colors.HexColor('#366092'),
-            spaceAfter=15
-        )
-        elements.append(Paragraph(f"<b>{title}</b>", title_style))
-        elements.append(Spacer(1, 10))
-        
-        # Format dates if they exist, to fit better
-        df_display = df.copy()
-        # Convert all to string to avoid issues
-        df_display = df_display.astype(str)
-        
-        # Replace NaN strings
-        df_display = df_display.replace('nan', '')
-        
-        data = [df_display.columns.tolist()] + df_display.values.tolist()
-        
-        table = Table(data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#366092')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-            ('TOPPADDING', (0, 0), (-1, 0), 10),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
-            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 9),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F2F2F2')])
-        ]))
-        
-        elements.append(table)
-        doc.build(elements)
-        logger.info(f"PDF created successfully: {output_path}")
-        return True
-    except ImportError:
-        logger.error("ReportLab not installed. Run 'pip install reportlab'.")
-        return False
-    except Exception as e:
-        logger.error(f"Error creating PDF: {e}")
-        return False
-
-def escape_applescript_string(text: str) -> str:
-    """Escape backslashes and double quotes for safe AppleScript injection."""
-    if text is None:
-        return ""
-    text = str(text)
-    return text.replace('\\', '\\\\').replace('"', '\\"')
-
-def convert_to_pdf_numbers(csv_path, pdf_path):
-    """Convert CSV to PDF using Numbers.app (macOS native) for best formatting."""
-    logger.info(f"Converting to PDF using Numbers.app: {pdf_path}")
-    try:
-        # Use absolute paths for AppleScript
-        abs_csv = escape_applescript_string(os.path.abspath(csv_path))
-        abs_pdf = escape_applescript_string(os.path.abspath(pdf_path))
-        
-        applescript = f'''
-        tell application "Numbers"
-            set theDoc to open POSIX file "{abs_csv}"
-            delay 1
-            export theDoc to POSIX file "{abs_pdf}" as PDF
-            close theDoc without saving
-        end tell
-        '''
-        
-        result = subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, timeout=30)
-        
-        if result.returncode == 0 and os.path.exists(abs_pdf):
-            logger.info(f"✓ PDF created successfully using Numbers: {pdf_path}")
-            return True
-        else:
-            logger.warning(f"Numbers export failed: {result.stderr}")
-            return False
-    except Exception as e:
-        logger.warning(f"Error using Numbers for PDF conversion: {e}")
-        return False
-
-def convert_to_pdf_excel_win32(excel_path, pdf_path):
-    """Convert Excel to PDF using Microsoft Excel (Windows native) for best formatting."""
-    logger.info(f"Converting to PDF using Excel (win32com): {pdf_path}")
-    try:
-        import win32com.client
-        from pythoncom import com_error
-        
-        excel_abs = os.path.abspath(excel_path)
-        pdf_abs = os.path.abspath(pdf_path)
-        
-        excel = win32com.client.Dispatch("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        
-        try:
-            wb = excel.Workbooks.Open(excel_abs)
-            # 0 = xlTypePDF
-            wb.ExportAsFixedFormat(0, pdf_abs)
-            wb.Close(False)
-            logger.info(f"✓ PDF created successfully using Excel: {pdf_path}")
-            return True
-        except com_error as e:
-            logger.warning(f"Excel export failed: {e}")
-            return False
-        finally:
-            excel.Quit()
-    except ImportError:
-        logger.warning("pywin32 not installed. Cannot use Excel for PDF conversion.")
-        return False
-    except Exception as e:
-        logger.warning(f"Error using Excel for PDF conversion: {e}")
-        return False
-
-def create_outlook_email(config, excel_path, pdf_path, month_year):
-    """Create a new email in Outlook, cross-platform."""
-    if not config.get("email_enabled", True):
-        logger.info("Email automation is disabled in config.")
-        return False
-    
-    subject = config["email_subject"].format(
-        employee_name=config["employee_name"],
-        client_name=config["client_name"],
-        month_year=month_year
-    )
-    body = config["email_body"].format(
-        employee_name=config["employee_name"],
-        client_name=config["client_name"],
-        month_year=month_year
-    )
-    recipient = config.get("email_recipient", "")
-    cc = config.get("email_cc", "")
-    
-    os_name = platform.system()
-    
-    if os_name == "Darwin":
-        logger.info("Drafting email using macOS AppleScript...")
-        # Escape inputs for AppleScript
-        subject_escaped = escape_applescript_string(subject)
-        body_escaped = escape_applescript_string(body).replace('\n', '\r')
-        recipient_escaped = escape_applescript_string(recipient)
-        cc_escaped = escape_applescript_string(cc)
-        excel_path_escaped = escape_applescript_string(excel_path)
-        pdf_path_escaped = escape_applescript_string(pdf_path)
-        
-        try:
-            applescript = f'''
-            tell application "Microsoft Outlook"
-                set newMessage to make new outgoing message with properties {{subject:"{subject_escaped}", content:"{body_escaped}"}}
-                {f'make new recipient at newMessage with properties {{email address:{{address:"{recipient_escaped}"}}}}' if recipient else ''}
-                {f'make new cc recipient at newMessage with properties {{email address:{{address:"{cc_escaped}"}}}}' if cc else ''}
-                make new attachment at newMessage with properties {{file:POSIX file "{excel_path_escaped}"}}
-                make new attachment at newMessage with properties {{file:POSIX file "{pdf_path_escaped}"}}
-                open newMessage
-                activate
-            end tell
-            '''
-
-            subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, check=True)
-            logger.info("✓ Outlook email draft created (macOS).")
-            return True
-        except Exception as e:
-            logger.error(f"Failed macOS email creation: {e}")
-            return False
+        if interactive:
+            print("\n--- First Time Setup ---")
+            print("This tool converts Float CSV exports to Excel/PDF and drafts an email.")
+            print("Note: Your original CSV will be archived to the 'converted/' folder after processing.\n")
             
-    elif os_name == "Windows":
-        logger.info("Drafting email using Windows win32com...")
+            config = DEFAULT_CONFIG.copy()
+            
+            name = input(f"Employee Name (e.g. {config['employee_name']}): ").strip()
+            if name: config['employee_name'] = name
+            
+            client = input(f"Client Name (e.g. {config['client_name']}): ").strip()
+            if client: config['client_name'] = client
+            
+            print(f"\nTarget Folder: Where the final Excel and PDF files will be saved.")
+            folder = input(f"Target Output Folder (e.g. OneDrive) [{config['target_folder']}]: ").strip()
+            if folder: config['target_folder'] = folder
+            
+            self.save_config(config)
+            print("\nConfiguration saved! You are ready to go.\n")
+            return config
+        else:
+            logger.warning("Config file missing. Generating default config.json.")
+            self.save_config(DEFAULT_CONFIG)
+            return DEFAULT_CONFIG
+
+    def save_config(self, config: Dict[str, Any]) -> None:
+        """Saves the current configuration dictionary to disk."""
+        with open(self.config_path, 'w') as f:
+            json.dump(config, f, indent=4)
+        logger.info(f"Saved configuration to {self.config_path}")
+
+    @staticmethod
+    def extract_end_date(filename: str, df: Optional[pd.DataFrame] = None) -> datetime:
+        """Extract end date from filename or fallback to DataFrame content."""
+        pattern = r'(.*?)-LoggedTime-(\d{8})-(\d{8}).*?\.csv'
+        match = re.search(pattern, filename)
+        
+        if match:
+            end_date_str = match.group(3)
+            return datetime.strptime(end_date_str, '%Y%m%d')
+            
+        logger.info(f"Filename '{filename}' didn't match expected pattern. Checking CSV content.")
+        
+        if df is not None:
+            # Fallback to checking DataFrame for a 'Date' column
+            date_col = next((col for col in df.columns if str(col).strip().lower() == 'date'), None)
+            if date_col:
+                # Coerce errors to NaT and drop them to find the max date
+                dates = pd.to_datetime(df[date_col], errors='coerce')
+                max_date = dates.max()
+                if pd.notna(max_date):
+                    return max_date
+                    
+        raise ValueError(f"Could not determine end date from filename '{filename}' or CSV content.")
+
+    @staticmethod
+    def read_csv_flexibly(file_path: Path) -> pd.DataFrame:
+        """Read CSV file, trying multiple delimiters."""
+        for delimiter in [',', '\t', ';']:
+            try:
+                df = pd.read_csv(file_path, delimiter=delimiter)
+                if len(df.columns) > 1:
+                    return df
+            except Exception:
+                pass
         try:
-            import win32com.client
-            outlook = win32com.client.Dispatch("Outlook.Application")
-            mail = outlook.CreateItem(0)
-            mail.To = recipient
-            mail.CC = cc
-            mail.Subject = subject
-            mail.Body = body
-            mail.Attachments.Add(str(excel_path))
-            mail.Attachments.Add(str(pdf_path))
-            mail.Display(True)
-            logger.info("✓ Outlook email draft created (Windows).")
+            df = pd.read_csv(file_path, sep=None, engine='python')
+            return df
+        except Exception as e:
+            raise ValueError(f"Failed to read CSV with any delimiter: {e}")
+
+    @staticmethod
+    def escape_applescript_string(text: str) -> str:
+        """Escape backslashes and double quotes for safe AppleScript injection."""
+        if text is None:
+            return ""
+        text = str(text)
+        return text.replace('\\', '\\\\').replace('"', '\\"')
+
+    def convert_to_excel(self, df: pd.DataFrame, output_path: Path) -> bool:
+        """Convert DataFrame to Excel file with basic formatting."""
+        logger.info(f"Converting to Excel: {output_path.name}")
+        try:
+            with pd.ExcelWriter(str(output_path), engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Timesheet')
+                worksheet = writer.sheets['Timesheet']
+                
+                header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                header_font = Font(color="FFFFFF", bold=True)
+                
+                for cell in worksheet[1]:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    worksheet.column_dimensions[column_letter].width = min(max_length + 2, 50)
+            return True
+        except Exception as e:
+            logger.error(f"Error creating Excel: {e}")
+            return False
+
+    def convert_to_pdf_pure_python(self, df: pd.DataFrame, output_path: Path, title: str) -> bool:
+        """Generate high-quality PDF using ReportLab without external dependencies."""
+        logger.info(f"Converting to PDF (Pure Python): {output_path.name}")
+        try:
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
+            
+            doc = SimpleDocTemplate(str(output_path), pagesize=landscape(A4),
+                                    rightMargin=30, leftMargin=30,
+                                    topMargin=30, bottomMargin=30)
+            elements = []
+            styles = getSampleStyleSheet()
+            
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=16,
+                textColor=colors.HexColor('#366092'),
+                spaceAfter=15
+            )
+            elements.append(Paragraph(f"<b>{title}</b>", title_style))
+            elements.append(Spacer(1, 10))
+            
+            df_display = df.copy().astype(str).replace('nan', '')
+            data = [df_display.columns.tolist()] + df_display.values.tolist()
+            
+            table = Table(data, repeatRows=1)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#366092')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                ('TOPPADDING', (0, 0), (-1, 0), 10),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 9),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F2F2F2')])
+            ]))
+            
+            elements.append(table)
+            doc.build(elements)
+            logger.info(f"✓ PDF created successfully: {output_path.name}")
             return True
         except ImportError:
-            logger.error("pywin32 not installed. Run 'pip install pywin32'.")
+            logger.error("ReportLab not installed. Run 'pip install reportlab'.")
             return False
         except Exception as e:
-            logger.error(f"Failed Windows email creation: {e}")
+            logger.error(f"Error creating PDF: {e}")
             return False
-    else:
-        logger.warning(f"OS {os_name} not supported for automated email drafting.")
-        return False
 
-def process_file(csv_file_path, config):
-    """Core logic to process a single timesheet file."""
-    csv_path = Path(csv_file_path)
-    if not csv_path.exists():
-        logger.error(f"File not found: {csv_path}")
-        return False
+    def convert_to_pdf_numbers(self, csv_path: Path, pdf_path: Path) -> bool:
+        """Convert CSV to PDF using Numbers.app (macOS native) for best formatting."""
+        logger.info(f"Converting to PDF using Numbers.app: {pdf_path.name}")
+        try:
+            abs_csv = self.escape_applescript_string(str(csv_path.absolute()))
+            abs_pdf = self.escape_applescript_string(str(pdf_path.absolute()))
+            
+            applescript = f'''
+            tell application "Numbers"
+                set theDoc to open POSIX file "{abs_csv}"
+                delay 1
+                export theDoc to POSIX file "{abs_pdf}" as PDF
+                close theDoc without saving
+            end tell
+            '''
+            
+            result = subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and pdf_path.exists():
+                logger.info(f"✓ PDF created successfully using Numbers: {pdf_path.name}")
+                return True
+            else:
+                logger.warning(f"Numbers export failed: {result.stderr}")
+                return False
+        except Exception as e:
+            logger.warning(f"Error using Numbers for PDF conversion: {e}")
+            return False
 
-    logger.info(f"Processing: {csv_path.name}")
-    try:
-        df = read_csv_flexibly(csv_path)
-        logger.info(f"Loaded {len(df)} rows.")
+    def convert_to_pdf_excel_win32(self, excel_path: Path, pdf_path: Path) -> bool:
+        """Convert Excel to PDF using Microsoft Excel (Windows native) for best formatting."""
+        logger.info(f"Converting to PDF using Excel (win32com): {pdf_path.name}")
+        try:
+            import win32com.client
+            from pythoncom import com_error
+            
+            excel_abs = str(excel_path.absolute())
+            pdf_abs = str(pdf_path.absolute())
+            
+            excel = win32com.client.Dispatch("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            
+            try:
+                wb = excel.Workbooks.Open(excel_abs)
+                wb.ExportAsFixedFormat(0, pdf_abs) # 0 = xlTypePDF
+                wb.Close(False)
+                logger.info(f"✓ PDF created successfully using Excel: {pdf_path.name}")
+                return True
+            except com_error as e:
+                logger.warning(f"Excel export failed: {e}")
+                return False
+            finally:
+                excel.Quit()
+        except ImportError:
+            logger.warning("pywin32 not installed. Cannot use Excel for PDF conversion.")
+            return False
+        except Exception as e:
+            logger.warning(f"Error using Excel for PDF conversion: {e}")
+            return False
+
+    def create_outlook_email(self, excel_path: Path, pdf_path: Path, month_year: str) -> bool:
+        """Create a new email in Outlook, cross-platform."""
+        if not self.config.get("email_enabled", True):
+            logger.info("Email automation is disabled in config.")
+            return False
         
-        end_date = extract_end_date(csv_path.name, df)
-        month_year = end_date.strftime('%m-%Y')
+        subject = self.config["email_subject"].format(
+            employee_name=self.config["employee_name"],
+            client_name=self.config["client_name"],
+            month_year=month_year
+        )
+        body = self.config["email_body"].format(
+            employee_name=self.config["employee_name"],
+            client_name=self.config["client_name"],
+            month_year=month_year
+        )
+        recipient = self.config.get("email_recipient", "")
+        cc = self.config.get("email_cc", "")
         
-        base_filename = f"Urenstaat {config['client_name']}-{config['employee_name']} {month_year}"
-        excel_filename = f"{base_filename}.xlsx"
-        pdf_filename = f"{base_filename}.pdf"
-        
-        target_folder = Path(config["target_folder"])
-        target_folder.mkdir(parents=True, exist_ok=True)
-        
-        excel_path = target_folder / excel_filename
-        pdf_path = target_folder / pdf_filename
-        
-        convert_to_excel(df, excel_path)
-        
-        # Try native conversion on macOS if possible
-        pdf_success = False
         os_name = platform.system()
+        
         if os_name == "Darwin":
-            pdf_success = convert_to_pdf_numbers(csv_path, pdf_path)
+            logger.info("Drafting email using macOS AppleScript...")
+            subject_escaped = self.escape_applescript_string(subject)
+            body_escaped = self.escape_applescript_string(body).replace('\n', '\r')
+            recipient_escaped = self.escape_applescript_string(recipient)
+            cc_escaped = self.escape_applescript_string(cc)
+            excel_path_escaped = self.escape_applescript_string(str(excel_path.absolute()))
+            pdf_path_escaped = self.escape_applescript_string(str(pdf_path.absolute()))
+            
+            try:
+                applescript = f'''
+                tell application "Microsoft Outlook"
+                    set newMessage to make new outgoing message with properties {{subject:"{subject_escaped}", content:"{body_escaped}"}}
+                    {f'make new recipient at newMessage with properties {{email address:{{address:"{recipient_escaped}"}}}}' if recipient else ''}
+                    {f'make new cc recipient at newMessage with properties {{email address:{{address:"{cc_escaped}"}}}}' if cc else ''}
+                    make new attachment at newMessage with properties {{file:POSIX file "{excel_path_escaped}"}}
+                    make new attachment at newMessage with properties {{file:POSIX file "{pdf_path_escaped}"}}
+                    open newMessage
+                    activate
+                end tell
+                '''
+                subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, check=True)
+                logger.info("✓ Outlook email draft created (macOS).")
+                return True
+            except Exception as e:
+                logger.error(f"Failed macOS email creation: {e}")
+                return False
+                
         elif os_name == "Windows":
-            pdf_success = convert_to_pdf_excel_win32(excel_path, pdf_path)
-        
-        # Fallback for any OS
-        if not pdf_success:
-            pdf_success = convert_to_pdf_pure_python(df, pdf_path, title=base_filename)
-        
-        # Archive original CSV
-        archived_csv_path = CONVERTED_FOLDER / csv_path.name
-        # Using copy + unlink to avoid cross-device link issues if folders are on different partitions
-        shutil.copy2(str(csv_path), str(archived_csv_path))
-        os.remove(str(csv_path))
-        logger.info(f"Archived original CSV to {archived_csv_path}")
-        
-        # Draft email
-        create_outlook_email(config, excel_path, pdf_path, month_year)
-        
-        logger.info(f"✓ Successfully processed {csv_path.name}")
-        return True
+            logger.info("Drafting email using Windows win32com...")
+            try:
+                import win32com.client
+                outlook = win32com.client.Dispatch("Outlook.Application")
+                mail = outlook.CreateItem(0)
+                mail.To = recipient
+                mail.CC = cc
+                mail.Subject = subject
+                mail.Body = body
+                mail.Attachments.Add(str(excel_path.absolute()))
+                mail.Attachments.Add(str(pdf_path.absolute()))
+                mail.Display(True)
+                logger.info("✓ Outlook email draft created (Windows).")
+                return True
+            except ImportError:
+                logger.error("pywin32 not installed. Run 'pip install pywin32'.")
+                return False
+            except Exception as e:
+                logger.error(f"Failed Windows email creation: {e}")
+                return False
+        else:
+            logger.warning(f"OS {os_name} not supported for automated email drafting.")
+            return False
 
-    except Exception as e:
-        logger.error(f"Error processing {csv_path.name}: {e}", exc_info=True)
-        return False
+    def process_file(self, csv_file_path: Path | str) -> bool:
+        """Core logic to process a single timesheet file."""
+        csv_path = Path(csv_file_path)
+        if not csv_path.exists():
+            logger.error(f"File not found: {csv_path}")
+            return False
+
+        logger.info(f"Processing: {csv_path.name}")
+        try:
+            df = self.read_csv_flexibly(csv_path)
+            logger.info(f"Loaded {len(df)} rows.")
+            
+            end_date = self.extract_end_date(csv_path.name, df)
+            month_year = end_date.strftime('%m-%Y')
+            
+            base_filename = f"Urenstaat {self.config['client_name']}-{self.config['employee_name']} {month_year}"
+            excel_filename = f"{base_filename}.xlsx"
+            pdf_filename = f"{base_filename}.pdf"
+            
+            target_folder = Path(self.config["target_folder"])
+            target_folder.mkdir(parents=True, exist_ok=True)
+            
+            excel_path = target_folder / excel_filename
+            pdf_path = target_folder / pdf_filename
+            
+            # 1. Convert to Excel
+            excel_success = self.convert_to_excel(df, excel_path)
+            if not excel_success:
+                logger.error(f"Failed to generate Excel file: {excel_filename}. Aborting processing for this file.")
+                return False
+            
+            # 2. Convert to PDF
+            pdf_success = False
+            os_name = platform.system()
+            if os_name == "Darwin":
+                pdf_success = self.convert_to_pdf_numbers(csv_path, pdf_path)
+            elif os_name == "Windows":
+                pdf_success = self.convert_to_pdf_excel_win32(excel_path, pdf_path)
+            
+            if not pdf_success:
+                pdf_success = self.convert_to_pdf_pure_python(df, pdf_path, title=base_filename)
+            
+            # 3. Archive original CSV
+            archived_csv_path = CONVERTED_FOLDER / csv_path.name
+            shutil.copy2(str(csv_path), str(archived_csv_path))
+            os.remove(str(csv_path))
+            logger.info(f"Archived original CSV to {archived_csv_path.name}")
+            
+            # 4. Draft email
+            self.create_outlook_email(excel_path, pdf_path, month_year)
+            
+            logger.info(f"✓ Successfully processed {csv_path.name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error processing {csv_path.name}: {e}", exc_info=True)
+            return False
+
 
 def main():
     parser = argparse.ArgumentParser(description="Shareable Timesheet Processor")
@@ -433,16 +443,15 @@ def main():
     
     args = parser.parse_args()
     
+    processor = TimesheetProcessor(CONFIG_FILE, interactive_setup=args.setup)
+    
     if args.setup:
-        load_config(interactive=True)
         return
 
-    config = load_config(interactive=False)
-    
     # Process files provided via CLI arguments
     if args.files:
         for file in args.files:
-            process_file(file, config)
+            processor.process_file(file)
         return
         
     # If no files provided, check 'Import Urenstaat' folder as fallback
@@ -452,7 +461,7 @@ def main():
         if csv_files:
             logger.info(f"Found {len(csv_files)} file(s) in {legacy_import_folder}")
             for file in csv_files:
-                process_file(file, config)
+                processor.process_file(file)
             return
 
     logger.info("No files provided or found. Usage: drag & drop a file, or run with file arguments.")
