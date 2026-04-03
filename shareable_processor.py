@@ -69,19 +69,23 @@ def load_config(interactive=False):
     
     if interactive:
         print("\n--- First Time Setup ---")
+        print("This tool converts Float CSV exports to Excel/PDF and drafts an email.")
+        print("Note: Your original CSV will be archived to the 'converted/' folder after processing.\n")
+        
         config = DEFAULT_CONFIG.copy()
         
-        name = input(f"Employee Name [{config['employee_name']}]: ").strip()
+        name = input(f"Employee Name (e.g. {config['employee_name']}): ").strip()
         if name: config['employee_name'] = name
         
-        client = input(f"Client Name [{config['client_name']}]: ").strip()
+        client = input(f"Client Name (e.g. {config['client_name']}): ").strip()
         if client: config['client_name'] = client
         
+        print(f"\nTarget Folder: Where the final Excel and PDF files will be saved.")
         folder = input(f"Target Output Folder (e.g. OneDrive) [{config['target_folder']}]: ").strip()
         if folder: config['target_folder'] = folder
         
         save_config(config)
-        print("Configuration saved!\n")
+        print("\nConfiguration saved! You are ready to go.\n")
         return config
     else:
         logger.warning("Config file missing. Generating default config.json.")
@@ -295,10 +299,12 @@ def create_outlook_email(config, excel_path, pdf_path, month_year):
     
     if os_name == "Darwin":
         logger.info("Drafting email using macOS AppleScript...")
+        # AppleScript strings use \r for newlines in many cases for Outlook
+        body_escaped = body.replace('"', '\\"').replace('\n', '\r')
         try:
             applescript = f'''
             tell application "Microsoft Outlook"
-                set newMessage to make new outgoing message with properties {{subject:"{subject}", content:"{body}"}}
+                set newMessage to make new outgoing message with properties {{subject:"{subject}", content:"{body_escaped}"}}
                 {f'make new recipient at newMessage with properties {{email address:{{address:"{recipient}"}}}}' if recipient else ''}
                 {f'make new cc recipient at newMessage with properties {{email address:{{address:"{cc}"}}}}' if cc else ''}
                 make new attachment at newMessage with properties {{file:POSIX file "{excel_path}"}}
@@ -307,6 +313,7 @@ def create_outlook_email(config, excel_path, pdf_path, month_year):
                 activate
             end tell
             '''
+
             subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, check=True)
             logger.info("✓ Outlook email draft created (macOS).")
             return True
